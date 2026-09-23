@@ -1,308 +1,576 @@
+import io
 import json
 import time
 import re
-import urllib.parse
-import requests
+import streamlit as st
 from PIL import Image
-from bs4 import BeautifulSoup
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-import os
-from dotenv import load_dotenv
 
-# Carga la clave oculta del archivo .env
+# ReportLab para la generación del PDF profesional
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+
 load_dotenv()
 
-# La librería de Google toma GEMINI_API_KEY del entorno de forma automática
-client = genai.Client()
-
-# ==========================================================
-# 1. CONFIGURACIÓN
-# ==========================================================
-RUTA_IMAGEN = "choque.jpeg"
-VEHICULO = "Chevrolet Classic"
-
-print("================================================================")
-print(f" SISTEMA PERICIAL DE TASACIÓN DE SINIESTROS - TALLER IA")
-print(f" Vehículo: {VEHICULO}")
-print("================================================================")
-
-# ==========================================================
-# 2. PERITAJE DUAL CON ESTIMACIÓN DE MERCADO
-# ==========================================================
-print("\n[Paso 1/3] Realizando peritaje técnico avanzado con IA...")
-
-foto = Image.open(RUTA_IMAGEN)
-foto.thumbnail((1024, 1024))
-# Ya no hace falta redefinir client acá, usa el que creaste arriba
-
-prompt = f"""
-Sos un perito liquidador de siniestros automotores en Argentina con amplio conocimiento de costos en talleres de chapa y pintura.
-Analizá la foto de este siniestro ({VEHICULO}).
-
-Confeccioná el relevamiento pericial clasificando en dos categorías:
-1. "danos_visibles": Piezas exteriores directamente dañadas visibles en la foto.
-2. "danos_ocultos": Piezas estructurales o mecanismos afectados por la deformación (panel de cola, cerraduras, almas, trabas de faros).
-
-Para CADA pieza, incluí un precio estimado de referencia de mercado en pesos argentinos (ARS) a valores actuales.
-
-Respondé ÚNICAMENTE en formato JSON con esta estructura exacta:
-{{
-  "diagnostico_tecnico": "Dictamen pericial técnico del impacto",
-  "repuestos_visibles": [
-    {{"pieza": "Nombre de la pieza", "termino_busqueda": "Término corto para buscar", "precio_estimado": 250000}}
-  ],
-  "repuestos_ocultos": [
-    {{"pieza": "Nombre de la pieza", "termino_busqueda": "Término corto para buscar", "precio_estimado": 150000}}
-  ]
-}}
-"""
-
-try:
-    respuesta = client.models.generate_content(
-        model='gemini-3.6-flash',
-        contents=[prompt, foto],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json"
-        )
-    )
-    datos_peritaje = json.loads(respuesta.text)
-    dictamen = datos_peritaje.get("diagnostico_tecnico", "Impacto trasero severo.")
-    visibles_ia = datos_peritaje.get("repuestos_visibles", [])
-    ocultos_ia = datos_peritaje.get("repuestos_ocultos", [])
-
-    print("\n--- DICTAMEN PERICIAL EMITIDO POR LA IA ---")
-    print(f"Análisis: {dictamen}\n")
-    print(f"• Daños Directos Visibles ({len(visibles_ia)} piezas identificadas)")
-    print(f"• Daños Ocultos / Estructurales ({len(ocultos_ia)} piezas identificadas)")
-
-except Exception as e:
-    print(f"Error en peritaje: {e}")
-    dictamen = "Impacto posterior con compromiso estructural de panel de cola."
-    visibles_ia = [
-        {"pieza": "Paragolpes Trasero", "termino_busqueda": "paragolpes trasero", "precio_estimado": 570000},
-        {"pieza": "Tapa de Baúl", "termino_busqueda": "tapa baul", "precio_estimado": 1200000},
-        {"pieza": "Guía Soporte Lateral Derecho", "termino_busqueda": "guia paragolpes trasero derecho", "precio_estimado": 30000},
-        {"pieza": "Faro Trasero Derecho", "termino_busqueda": "optica trasera derecha", "precio_estimado": 150000}
-    ]
-    ocultos_ia = [
-        {"pieza": "Panel de Cola Trasero", "termino_busqueda": "panel de cola", "precio_estimado": 330000},
-        {"pieza": "Cerradura y Cilindro de Baúl", "termino_busqueda": "cerradura baul", "precio_estimado": 170000},
-        {"pieza": "Alma de Paragolpes Trasero", "termino_busqueda": "alma paragolpes trasero", "precio_estimado": 110000}
-    ]
-
-# ==========================================================
-# 3. SCRAPING DIRECTO DE MERCADO LIBRE ARGENTINA
-# ==========================================================
-print("\n[Paso 2/3] Cotizando piezas en tiempo real en Mercado Libre...")
-
-def cotizar_en_mercadolibre_web(termino_corto, vehiculo, precio_referencia):
-    # Limpiamos el texto de búsqueda para ML
-    termino_limpio = f"{termino_corto} {vehiculo}".replace("/", " ").replace("(", "").replace(")", "").strip()
-    query_slug = re.sub(r'\s+', '-', termino_limpio.lower())
-    
-    url = f"https://listado.mercadolibre.com.ar/{query_slug}_Condicion_Nuevo"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept-Language": "es-AR,es;q=0.9"
-    }
-
-    try:
-        time.sleep(0.5)  # Pausa breve para evitar bloqueos
-        res = requests.get(url, headers=headers, timeout=8)
-        
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
-            items = soup.find_all("li", class_="ui-search-layout__item")
-            if not items:
-                items = soup.find_all("div", class_="poly-card")
-
-            filtros_descarte = ["calco", "sticker", "foco", "lampara"]
-            candidatos = []
-
-            for item in items[:10]:
-                h2 = item.find("h2")
-                if not h2:
-                    continue
-                titulo = h2.get_text().strip()
-                
-                link_tag = item.find("a", href=True)
-                link = link_tag["href"] if link_tag else url
-                
-                precios_tags = item.find_all("span", class_="andes-money-amount__fraction")
-                if not precios_tags:
-                    continue
-                
-                precio_raw = precios_tags[-1].get_text().replace(".", "").replace(",", "").strip()
-                try:
-                    precio = float(precio_raw)
-                except ValueError:
-                    continue
-
-                if not any(f in titulo.lower() for f in filtros_descarte) and precio > 2000:
-                    candidatos.append({
-                        "titulo": titulo,
-                        "precio": precio,
-                        "link": link
-                    })
-
-            if candidatos:
-                candidatos.sort(key=lambda x: x["precio"], reverse=True)
-                return candidatos[0]
-
-    except Exception:
-        pass
-
-    # Si ML no arroja resultado directo, aplicamos la cotización de referencia pericial
-    return {
-        "titulo": f"Cotización de referencia pericial ({termino_corto.title()})",
-        "precio": float(precio_referencia),
-        "link": f"https://listado.mercadolibre.com.ar/{query_slug}"
-    }
-
-cotizaciones_visibles = []
-cotizaciones_ocultas = []
-
-print("Cotizando repuestos de daño directo...")
-for item in visibles_ia:
-    nombre = item["pieza"]
-    termino = item.get("termino_busqueda", nombre)
-    ref_precio = item.get("precio_estimado", 150000)
-    
-    cot = cotizar_en_mercadolibre_web(termino, VEHICULO, ref_precio)
-    cotizaciones_visibles.append({"item": nombre, **cot})
-    print(f"  [OK] {nombre} -> ${cot['precio']:,.2f}")
-
-print("\nCotizando repuestos estructurales y ocultos...")
-for item in ocultos_ia:
-    nombre = item["pieza"]
-    termino = item.get("termino_busqueda", nombre)
-    ref_precio = item.get("precio_estimado", 120000)
-    
-    cot = cotizar_en_mercadolibre_web(termino, VEHICULO, ref_precio)
-    cotizaciones_ocultas.append({"item": nombre, **cot})
-    print(f"  [OK] {nombre} -> ${cot['precio']:,.2f}")
-
-# ==========================================================
-# 4. ARMADO DE PRESUPUESTO PROFESIONAL EN EXCEL (.XLSX)
-# ==========================================================
-print("\n[Paso 3/3] Generando planilla pericial formal en Excel...")
-
-wb = openpyxl.Workbook()
-ws = wb.active
-ws.title = "Presupuesto Siniestro"
-ws.views.sheetView[0].showGridLines = True
-
-AZUL_OSCURO = "1F497D"
-BORDE_COLOR = "D9D9D9"
-
-borde_fino = Border(
-    left=Side(style='thin', color=BORDE_COLOR),
-    right=Side(style='thin', color=BORDE_COLOR),
-    top=Side(style='thin', color=BORDE_COLOR),
-    bottom=Side(style='thin', color=BORDE_COLOR)
+st.set_page_config(
+    page_title="Taller IA — Sistema Integral de Siniestros",
+    page_icon="🚗",
+    layout="wide"
 )
 
-ws["A1"] = "INFORME PERICIAL Y PRESUPUESTO ESTIMATIVO DE REPARACIÓN"
-ws["A1"].font = Font(name="Arial", size=14, bold=True, color=AZUL_OSCURO)
+st.markdown("""
+    <style>
+    .titulo-pericial { font-size: 26px; font-weight: 800; color: #1F497D; margin-bottom: 2px; }
+    .sub-pericial { font-size: 14px; color: #555555; margin-bottom: 18px; }
+    .card-vehiculo { background-color: #F1F4F8; padding: 14px 20px; border-radius: 6px; border-left: 5px solid #1F497D; margin-bottom: 15px; }
+    </style>
+""", unsafe_allow_html=True)
 
-ws["A2"] = f"Vehículo: {VEHICULO}  |  Fecha: {time.strftime('%d/%m/%Y')}  |  Destino: Aseguradora / Taller"
-ws["A2"].font = Font(name="Arial", size=10, italic=True, color="333333")
+st.markdown('<div class="titulo-pericial">Taller IA — Peritaje, Baremo y Emisión de Presupuestos</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-pericial">Detección visual, deducción mecánica, baremo configurable y exportación profesional en PDF y Excel</div>', unsafe_allow_html=True)
 
-ws["A3"] = f"Dictamen Técnico: {dictamen}"
-ws["A3"].font = Font(name="Arial", size=9, italic=True, color="555555")
+# -------------------------------------------------------------
+# FUNCIÓN DE LLAMADA SEGURA CON REINTENTOS (ANTI-ERROR 503)
+# -------------------------------------------------------------
+def llamar_gemini_con_reintentos(client, model, contents, config, max_reintentos=4):
+    for intento in range(max_reintentos):
+        try:
+            return client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config
+            )
+        except Exception as e:
+            error_str = str(e).lower()
+            if ("503" in error_str or "high demand" in error_str or "429" in error_str or "unavailable" in error_str) and intento < max_reintentos - 1:
+                tiempo_espera = (intento + 1) * 3
+                time.sleep(tiempo_espera)
+                continue
+            raise e
 
-cabeceras = ["Ítem", "Pieza Reclamada", "Detalle de Publicación / Referencia", "Precio Unitario (ARS)", "Enlace Testigo"]
+# -------------------------------------------------------------
+# 1. BARRA LATERAL: IDENTIDAD DEL TALLER Y CLIENTE
+# -------------------------------------------------------------
+with st.sidebar:
+    st.subheader("1. Identidad del Taller")
+    logo_subido = st.file_uploader("Subir Logo del Taller (PNG / JPG):", type=["png", "jpg", "jpeg"])
+    nombre_taller = st.text_input("Nombre / Razón Social:", value="MAXIAUTOMOTORES")
+    dir_taller = st.text_input("Dirección:", value="Av Juan Bautista Justo 7214 CABA")
+    fiscal_taller = st.text_input("Condición Fiscal:", value="Responsable Monotributista")
+    cuit_taller = st.text_input("CUIT:", value="20-34151842-4")
+    tel_taller = st.text_input("Teléfono:", value="15-5581-9975")
+    mail_taller = st.text_input("Email:", value="maxiautomotores@gmail.com")
 
-def escribir_cabecera(fila_num):
-    for col_idx, texto in enumerate(cabeceras, 1):
-        c = ws.cell(row=fila_num, column=col_idx, value=texto)
-        c.font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
-        c.fill = PatternFill(start_color=AZUL_OSCURO, end_color=AZUL_OSCURO, fill_type="solid")
-        c.alignment = Alignment(horizontal="center", vertical="center")
+    st.markdown("---")
+    st.subheader("2. Datos del Presupuesto y Cliente")
+    nro_presupuesto = st.text_input("N° Presupuesto:", value="0002591")
+    nombre_titular = st.text_input("Titular / Asegurado:", value="Vargas Hernandez Alvaro Paul")
+    dni_titular = st.text_input("DNI / CUIT Titular:", value="96.012.998")
+    domicilio_titular = st.text_input("Domicilio Titular:", value="Av Belgrano 2725, CABA")
+    tel_titular = st.text_input("Teléfono Titular:", value="")
 
-fila = 5
+    st.markdown("---")
+    st.subheader("3. Baremos y Tarifas")
+    tarifa_pano = st.number_input("Valor por paño de pintura ($ ARS):", min_value=0, value=140000, step=5000)
+    tarifa_dia_chapa = st.number_input("Valor día chapa pesada / banco ($ ARS):", min_value=0, value=110000, step=5000)
+    tarifa_mecanica_base = st.number_input("M.O. Mecánica / Arme y Desarme ($ ARS):", min_value=0, value=300000, step=10000)
+    costo_materiales = st.number_input("Materiales pintura y selladores ($ ARS):", min_value=0, value=150000, step=10000)
 
-# --- SECCIÓN 1: DAÑOS VISIBLES ---
-ws.cell(row=fila, column=1, value="SECCIÓN 1: DAÑOS DIRECTOS VISIBLES (CARROCERÍA Y EXTERIOR)").font = Font(bold=True, color=AZUL_OSCURO)
-fila += 1
-escribir_cabecera(fila)
-fila_inicio_visibles = fila + 1
+if "peritaje_listo" not in st.session_state:
+    st.session_state.peritaje_listo = False
+if "datos_peritaje" not in st.session_state:
+    st.session_state.datos_peritaje = None
+if "repuestos_cotizados" not in st.session_state:
+    st.session_state.repuestos_cotizados = []
 
-fila += 1
-for idx, cot in enumerate(cotizaciones_visibles, 1):
-    ws.cell(row=fila, column=1, value=idx).alignment = Alignment(horizontal="center")
-    ws.cell(row=fila, column=2, value=cot["item"])
-    ws.cell(row=fila, column=3, value=cot["titulo"])
-    
-    celda_p = ws.cell(row=fila, column=4, value=cot["precio"])
-    celda_p.number_format = "$#,##0.00"
-    
-    ws.cell(row=fila, column=5, value=cot["link"])
-    for c in range(1, 6):
-        ws.cell(row=fila, column=c).border = borde_fino
-    fila += 1
+# -------------------------------------------------------------
+# 2. CARGA DE FOTOS DEL SINIESTRO
+# -------------------------------------------------------------
+archivos_subidos = st.file_uploader(
+    "Subí las fotos del siniestro (frente, laterales, vano motor) y/o la cédula:",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True
+)
 
-fila_fin_visibles = fila - 1
-ws.cell(row=fila, column=3, value="SUBTOTAL DAÑOS DIRECTOS:").font = Font(bold=True)
-ws.cell(row=fila, column=3).alignment = Alignment(horizontal="right")
-sub_vis = ws.cell(row=fila, column=4, value=f"=SUM(D{fila_inicio_visibles}:D{fila_fin_visibles})")
-sub_vis.font = Font(bold=True)
-sub_vis.number_format = "$#,##0.00"
-fila_subtotal_visibles = fila
+if archivos_subidos:
+    cols = st.columns(min(len(archivos_subidos), 4))
+    for i, arch in enumerate(archivos_subidos[:4]):
+        with cols[i]:
+            st.image(Image.open(arch), caption=f"Foto {i+1}", use_container_width=True)
 
-fila += 2
+boton_iniciar = st.button(
+    "Iniciar Peritaje Técnico Integral",
+    type="primary",
+    use_container_width=True,
+    disabled=(not archivos_subidos)
+)
 
-# --- SECCIÓN 2: DAÑOS OCULTOS / ESTRUCTURALES ---
-ws.cell(row=fila, column=1, value="SECCIÓN 2: DAÑOS OCULTOS, ESTRUCTURALES Y MECANISMOS ASOCIADOS").font = Font(bold=True, color=AZUL_OSCURO)
-fila += 1
-escribir_cabecera(fila)
-fila_inicio_ocultos = fila + 1
+# -------------------------------------------------------------
+# 3. MOTOR PERICIAL INTELIGENTE
+# -------------------------------------------------------------
+if boton_iniciar and archivos_subidos:
+    client = genai.Client()
+    imagenes_pil = []
+    for a in archivos_subidos:
+        im = Image.open(a).convert("RGB")
+        im.thumbnail((1024, 1024))
+        imagenes_pil.append(im)
 
-fila += 1
-for idx, cot in enumerate(cotizaciones_ocultas, 1):
-    ws.cell(row=fila, column=1, value=idx).alignment = Alignment(horizontal="center")
-    ws.cell(row=fila, column=2, value=cot["item"])
-    ws.cell(row=fila, column=3, value=cot["titulo"])
-    
-    celda_p = ws.cell(row=fila, column=4, value=cot["precio"])
-    celda_p.number_format = "$#,##0.00"
-    
-    ws.cell(row=fila, column=5, value=cot["link"])
-    for c in range(1, 6):
-        ws.cell(row=fila, column=c).border = borde_fino
-    fila += 1
+    with st.spinner("Analizando cinemática de impacto, deduciendo piezas y cotizando a valores de reposición..."):
+        prompt = """
+        Sos un perito liquidador senior de siniestros automotores en Argentina y jefe técnico de taller.
+        Analizá minuciosamente el lote de imágenes subidas.
 
-fila_fin_ocultos = fila - 1
-ws.cell(row=fila, column=3, value="SUBTOTAL DAÑOS ESTRUCTURALES/OCULTOS:").font = Font(bold=True)
-ws.cell(row=fila, column=3).alignment = Alignment(horizontal="right")
-sub_ocu = ws.cell(row=fila, column=4, value=f"=SUM(D{fila_inicio_ocultos}:D{fila_fin_ocultos})")
-sub_ocu.font = Font(bold=True)
-sub_ocu.number_format = "$#,##0.00"
-fila_subtotal_ocultos = fila
+        TAREAS TÉCNICAS:
+        1. IDENTIFICACIÓN VEHICULAR:
+           - Si hay cédula: leé exactamente Marca, Modelo, Versión, Año, Motor y Patente.
+           - Si no hay cédula: deducí Marca, Modelo, Versión/Año y Patente visible.
+        2. DICTAMEN TÉCNICO:
+           - Redactá un dictamen pericial técnico describiendo el vector de impacto y deformación estructural.
+        3. DESPIECE EXHAUSTIVO Y COTIZACIÓN DE REPOSICIÓN:
+           En choques frontales o asimétricos, deducí OBLIGATORIAMENTE repuestos de:
+           - Carrocería exterior (Capot, Paragolpes, Parrilla con emblema, Ópticas, Guardabarros, Patente duplicado).
+           - Estructura oculta (Marco porta radiadores, Alma de paragolpes, Puntera de chasis, Pasarruedas).
+           - Mecánica y tren delantero (Patas de motor izq/der, Pata de caja, Semieje del lado dañado, Radiador de agua, Condensador A/A, Electroventilador, Depósito lavaparabrisas con bomba).
+           Cotizá cada pieza al valor de reposición original OEM de concesionario en pesos argentinos (ARS).
+        4. BAREMOS:
+           - 'panos_pintura': Paños necesarios según piezas a intervenir (decimal).
+           - 'dias_chapa_banco': Días de banco de estiramiento para punteras (decimal).
+           - 'requiere_mecanica_pesada': true/false.
 
-fila += 2
+        Respondé ÚNICAMENTE en formato JSON:
+        {
+          "vehiculo_detectado": "Volkswagen Gol Trend G7 (2018)",
+          "patente_detectada": "AC 051 ID",
+          "fuente_identificacion": "Peritaje visual de carrocería y chapa patente",
+          "diagnostico_cinematica": "Dictamen técnico pericial...",
+          "panos_pintura": 5.5,
+          "dias_chapa_banco": 4.0,
+          "requiere_mecanica_pesada": true,
+          "repuestos": [
+            {"categoria": "Carrocería Exterior", "pieza": "Capot Original", "precio_oem": 1619460.0},
+            {"categoria": "Carrocería Exterior", "pieza": "Paragolpes Delantero Original", "precio_oem": 1096250.0},
+            {"categoria": "Carrocería Exterior", "pieza": "Parrilla Superior de Radiador con Emblema Original", "precio_oem": 616750.0},
+            {"categoria": "Carrocería Exterior", "pieza": "Óptica Delantera Izquierda Original", "precio_oem": 475710.0},
+            {"categoria": "Carrocería Exterior", "pieza": "Guardabarros Delantero Izquierdo Original", "precio_oem": 471960.0},
+            {"categoria": "Carrocería Exterior", "pieza": "Duplicado Legal de Chapa Patente Mercosur", "precio_oem": 45000.0},
+            {"categoria": "Estructura Oculta", "pieza": "Panel Frente Porta Radiadores", "precio_oem": 240910.0},
+            {"categoria": "Estructura Oculta", "pieza": "Alma / Travesaño de Paragolpes Delantero", "precio_oem": 210000.0},
+            {"categoria": "Estructura Oculta", "pieza": "Pasarruedas Interior Izquierdo", "precio_oem": 185000.0},
+            {"categoria": "Mecánica y Tren Delantero", "pieza": "Pata / Soporte de Motor Izquierdo Original", "precio_oem": 600970.0},
+            {"categoria": "Mecánica y Tren Delantero", "pieza": "Pata / Soporte de Motor Derecho Original", "precio_oem": 242410.0},
+            {"categoria": "Mecánica y Tren Delantero", "pieza": "Soporte / Pata de Caja de Cambios Trasera", "precio_oem": 82850.0},
+            {"categoria": "Mecánica y Tren Delantero", "pieza": "Semieje Delantero Izquierdo Completo", "precio_oem": 317950.0},
+            {"categoria": "Mecánica y Tren Delantero", "pieza": "Radiador de Agua de Motor Original", "precio_oem": 324020.0},
+            {"categoria": "Mecánica y Tren Delantero", "pieza": "Condensador de Aire Acondicionado", "precio_oem": 389400.0},
+            {"categoria": "Mecánica y Tren Delantero", "pieza": "Electroventilador Completo c/ Encauzador", "precio_oem": 155760.0},
+            {"categoria": "Mecánica y Tren Delantero", "pieza": "Depósito Líquido Lavaparabrisas c/ Bomba Original", "precio_oem": 136370.0}
+          ]
+        }
+        """
 
-# --- TOTAL GENERAL ---
-ws.cell(row=fila, column=2, value="TOTAL GENERAL PRESUPUESTADO (REPUESTOS):").font = Font(name="Arial", size=11, bold=True)
-ws.cell(row=fila, column=2).alignment = Alignment(horizontal="right")
-total_final = ws.cell(row=fila, column=4, value=f"=D{fila_subtotal_visibles}+D{fila_subtotal_ocultos}")
-total_final.font = Font(name="Arial", size=12, bold=True, color="B00000")
-total_final.number_format = "$#,##0.00"
+        try:
+            resp = llamar_gemini_con_reintentos(
+                client=client,
+                model='gemini-3.6-flash',
+                contents=[prompt] + imagenes_pil,
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+                max_reintentos=4
+            )
+            st.session_state.datos_peritaje = json.loads(resp.text)
+            st.session_state.peritaje_listo = True
+        except Exception as e:
+            st.error(f"Error en el procesamiento: {e}")
+            st.stop()
 
-# Anchos de columna
-ws.column_dimensions["A"].width = 8
-ws.column_dimensions["B"].width = 30
-ws.column_dimensions["C"].width = 55
-ws.column_dimensions["D"].width = 24
-ws.column_dimensions["E"].width = 45
+    if st.session_state.peritaje_listo and st.session_state.datos_peritaje:
+        datos = st.session_state.datos_peritaje
+        auto_str = datos.get("vehiculo_detectado", "Auto")
+        st.session_state.repuestos_cotizados = []
 
-archivo_excel = "presupuesto_siniestro.xlsx"
-wb.save(archivo_excel)
+        for item in datos.get("repuestos", []):
+            slug = re.sub(r'\s+', '-', re.sub(r'[^a-zA-Z0-9\s]', ' ', f"{item['pieza']} {auto_str}").lower().strip())
+            st.session_state.repuestos_cotizados.append({
+                "categoria": item.get("categoria", "Carrocería Exterior"),
+                "pieza": item["pieza"],
+                "precio": float(item["precio_oem"]),
+                "link": f"https://listado.mercadolibre.com.ar/{slug}_Condicion_Nuevo"
+            })
+        st.rerun()
 
-print("\n================================================================")
-print(" ¡PRESUPUESTO PERICIAL GENERADO CON PRECIOS REALES!")
-print(f" Archivo guardado: {archivo_excel}")
-print("================================================================")
+# -------------------------------------------------------------
+# 4. RESULTADOS, EDICIÓN Y EXPORTACIÓN DUAL (PDF + EXCEL)
+# -------------------------------------------------------------
+if st.session_state.peritaje_listo and st.session_state.datos_peritaje:
+    datos = st.session_state.datos_peritaje
+
+    st.markdown(f"""
+        <div class="card-vehiculo">
+            <h4 style="margin:0; color:#1F497D;">Vehículo: {datos.get('vehiculo_detectado')} - {datos.get('patente_detectada')}</h4>
+            <p style="margin:4px 0 0 0; font-size:13px; color:#333;">
+                <strong>Identificación:</strong> {datos.get('fuente_identificacion')} | 
+                <strong>Línea de Reposición:</strong> Original OEM Concesionario
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("Ver Dictamen Técnico Pericial", expanded=False):
+        st.write(datos.get("diagnostico_cinematica"))
+
+    # BAREMOS
+    st.subheader("1. Mano de Obra y Baremos de Reparación")
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        panos = st.number_input("Paños de Pintura:", value=float(datos.get("panos_pintura", 5.5)), step=0.5)
+        sub_pintura = panos * tarifa_pano
+        st.caption(f"Pintura: **${sub_pintura:,.2f}**")
+
+    with c2:
+        dias_chapa = st.number_input("Días Chapa Pesada / Banco:", value=float(datos.get("dias_chapa_banco", 4.0)), step=0.5)
+        sub_chapa = dias_chapa * tarifa_dia_chapa
+        st.caption(f"Chapa: **${sub_chapa:,.2f}**")
+
+    with c3:
+        req_mec = datos.get("requiere_mecanica_pesada", True)
+        aplica_mec = st.checkbox("M.O. Mecánica y A/A", value=req_mec)
+        sub_mec = tarifa_mecanica_base if aplica_mec else 0.0
+        st.caption(f"Mecánica: **${sub_mec:,.2f}**")
+
+    with c4:
+        aplica_mat = st.checkbox("Materiales y Selladores", value=True)
+        sub_mat = costo_materiales if aplica_mat else 0.0
+        st.caption(f"Materiales: **${sub_mat:,.2f}**")
+
+    total_mo = sub_pintura + sub_chapa + sub_mec + sub_mat
+
+    # REPUESTOS
+    st.subheader("2. Detalle de Repuestos Reclamados")
+    piezas_finales = []
+    for idx, r in enumerate(st.session_state.repuestos_cotizados):
+        col_c, col_p, col_l = st.columns([5, 2, 2])
+        with col_c:
+            activa = st.checkbox(f"**{r['pieza']}**", value=True, key=f"r_{idx}")
+        with col_p:
+            pr = st.number_input("Precio ($ ARS)", value=float(r["precio"]), step=5000.0, key=f"pr_{idx}", label_visibility="collapsed")
+        with col_l:
+            st.markdown(f"[Ver en Mercado Libre]({r['link']})")
+
+        if activa:
+            piezas_finales.append({
+                "categoria": r["categoria"],
+                "pieza": r["pieza"],
+                "precio": pr,
+                "link": r["link"]
+            })
+
+    total_repuestos = sum(p["precio"] for p in piezas_finales)
+    total_general = total_repuestos + total_mo
+
+    st.divider()
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Subtotal Mano de Obra", f"${total_mo:,.2f}")
+    m2.metric("Subtotal Repuestos", f"${total_repuestos:,.2f}")
+    m3.metric("TOTAL PRESUPUESTADO", f"${total_general:,.2f}")
+
+    # -------------------------------------------------------------
+    # GENERADOR DE PDF PROFESIONAL CON LOGO PERSONALIZADO
+    # -------------------------------------------------------------
+    def generar_pdf():
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            leftMargin=25,
+            rightMargin=25,
+            topMargin=25,
+            bottomMargin=25
+        )
+
+        elementos = []
+        styles = getSampleStyleSheet()
+
+        style_taller_titulo = ParagraphStyle('TallerTit', fontName='Helvetica-Bold', fontSize=14, leading=16, textColor=colors.HexColor("#1A2B4C"))
+        style_taller_sub = ParagraphStyle('TallerSub', fontName='Helvetica', fontSize=8, leading=10.5, textColor=colors.HexColor("#333333"))
+        style_pres_titulo = ParagraphStyle('PresTit', fontName='Helvetica-Bold', fontSize=11, leading=13, alignment=2, textColor=colors.HexColor("#1A2B4C"))
+        style_pres_sub = ParagraphStyle('PresSub', fontName='Helvetica', fontSize=8, leading=10.5, alignment=2, textColor=colors.HexColor("#333333"))
+        style_sec_title = ParagraphStyle('SecTit', fontName='Helvetica-Bold', fontSize=9.5, leading=11.5, textColor=colors.HexColor("#1A2B4C"))
+        style_celda = ParagraphStyle('Celda', fontName='Helvetica', fontSize=7.5, leading=9.5)
+        style_celda_bold = ParagraphStyle('CeldaB', fontName='Helvetica-Bold', fontSize=7.5, leading=9.5)
+        style_celda_num = ParagraphStyle('CeldaN', fontName='Helvetica', fontSize=7.5, leading=9.5, alignment=2)
+        style_celda_num_b = ParagraphStyle('CeldaNB', fontName='Helvetica-Bold', fontSize=8, leading=10, alignment=2)
+
+        # Encabezado: Taller y Logo a la Izquierda / Presupuesto a la Derecha
+        taller_info = []
+        if logo_subido is not None:
+            try:
+                logo_bytes = io.BytesIO(logo_subido.getvalue())
+                rl_img = RLImage(logo_bytes, width=110, height=45)
+                taller_info.append(rl_img)
+                taller_info.append(Spacer(1, 4))
+            except Exception:
+                taller_info.append(Paragraph(f"<b>{nombre_taller.upper()}</b>", style_taller_titulo))
+        else:
+            taller_info.append(Paragraph(f"<b>{nombre_taller.upper()}</b>", style_taller_titulo))
+
+        taller_info.extend([
+            Paragraph(dir_taller, style_taller_sub),
+            Paragraph(fiscal_taller, style_taller_sub),
+            Paragraph(f"CUIT: {cuit_taller}", style_taller_sub),
+            Paragraph(f"Tel: {tel_taller}", style_taller_sub),
+            Paragraph(f"Email: {mail_taller}", style_taller_sub),
+        ])
+
+        fecha_str = time.strftime("%d de Septiembre de %Y")
+        hora_str = time.strftime("%H:%M hs")
+
+        doc_info = [
+            Paragraph(f"<b>Presupuesto - Nro: {nro_presupuesto}</b>", style_pres_titulo),
+            Paragraph(f"<b>{nombre_taller.upper()}</b>", style_pres_sub),
+            Spacer(1, 4),
+            Paragraph(f"Fecha: {fecha_str}", style_pres_sub),
+            Paragraph(f"Hora: {hora_str}", style_pres_sub),
+        ]
+
+        t_header = Table([[taller_info, doc_info]], colWidths=[280, 265])
+        t_header.setStyle(TableStyle([
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+        ]))
+        elementos.append(t_header)
+        elementos.append(Spacer(1, 8))
+
+        # Cuadro de Cliente y Vehículo
+        vehiculo_str = f"{datos.get('vehiculo_detectado')} - {datos.get('patente_detectada')}"
+        info_cliente = [
+            [Paragraph(f"<b>Vehículo:</b> {vehiculo_str}", style_celda_bold), Paragraph(f"<b>Titular:</b> {nombre_titular}", style_celda)],
+            [Paragraph(f"<b>DNI / CUIT:</b> {dni_titular}", style_celda), Paragraph(f"<b>Teléfono:</b> {tel_titular if tel_titular else 'S/D'}", style_celda)],
+            [Paragraph(f"<b>Domicilio:</b> {domicilio_titular}", style_celda), Paragraph("<b>Localidad:</b> CABA, Buenos Aires", style_celda)]
+        ]
+        t_cli = Table(info_cliente, colWidths=[270, 275])
+        t_cli.setStyle(TableStyle([
+            ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#B0C0D0")),
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F7FAFC")),
+            ('TOPPADDING', (0,0), (-1,-1), 3),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+        ]))
+        elementos.append(t_cli)
+        elementos.append(Spacer(1, 8))
+
+        # Tareas / Mano de Obra
+        elementos.append(Paragraph("<b>Detalles de tareas (Mano de Obra)</b>", style_sec_title))
+        elementos.append(Spacer(1, 3))
+        tareas_data = [
+            [Paragraph("<b>Descripción de la Tarea</b>", style_celda_bold), Paragraph("<b>Detalle de Baremo</b>", style_celda_bold), Paragraph("<b>Subtotal</b>", style_celda_num_b)],
+            [Paragraph("M.O. CHAPA PESADA Y BANCO", style_celda), Paragraph(f"{dias_chapa} días de chapa / estiramiento", style_celda), Paragraph(f"$ {sub_chapa:,.2f}", style_celda_num)],
+            [Paragraph("M.O. PINTURA EN CABINA", style_celda), Paragraph(f"{panos} paños de pintura", style_celda), Paragraph(f"$ {sub_pintura:,.2f}", style_celda_num)],
+            [Paragraph("M.O. ARME, DESARME Y MECÁNICA", style_celda), Paragraph("Desarme de trompa, radiadores y mecánica", style_celda), Paragraph(f"$ {sub_mec:,.2f}", style_celda_num)],
+            [Paragraph("MATERIALES DE PINTURA Y SELLADORES", style_celda), Paragraph("Insumos de pintura y sellado oficial", style_celda), Paragraph(f"$ {sub_mat:,.2f}", style_celda_num)],
+            [Paragraph("<b>TOTAL MANO DE OBRA</b>", style_celda_bold), Paragraph("", style_celda), Paragraph(f"<b>$ {total_mo:,.2f}</b>", style_celda_num_b)]
+        ]
+        t_tar = Table(tareas_data, colWidths=[240, 185, 120])
+        t_tar.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#EAEFF5")),
+            ('LINEBELOW', (0,0), (-1,0), 1, colors.HexColor("#1A2B4C")),
+            ('LINEBELOW', (0,1), (-1,-2), 0.5, colors.HexColor("#E2E8F0")),
+            ('LINEABOVE', (0,-1), (-1,-1), 1, colors.HexColor("#1A2B4C")),
+            ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#F1F4F8")),
+            ('TOPPADDING', (0,0), (-1,-1), 2.5),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2.5),
+        ]))
+        elementos.append(t_tar)
+        elementos.append(Spacer(1, 8))
+
+        # Dictamen técnico
+        elementos.append(Paragraph("<b>Informe técnico:</b>", style_sec_title))
+        elementos.append(Spacer(1, 2))
+        style_dic = ParagraphStyle('Dic', fontName='Helvetica-Oblique', fontSize=7, leading=9, textColor=colors.HexColor("#444444"))
+        elementos.append(Paragraph(datos.get("diagnostico_cinematica", "Sin dictamen"), style_dic))
+        elementos.append(Spacer(1, 8))
+
+        # Repuestos
+        elementos.append(Paragraph("<b>Detalle repuestos utilizados</b>", style_sec_title))
+        elementos.append(Spacer(1, 3))
+        rep_data = [
+            [Paragraph("<b>Cant.</b>", style_celda_bold), Paragraph("<b>Descripción</b>", style_celda_bold), Paragraph("<b>Importe unitario</b>", style_celda_num_b), Paragraph("<b>Importe total</b>", style_celda_num_b)]
+        ]
+        for p in piezas_finales:
+            rep_data.append([
+                Paragraph("1", style_celda),
+                Paragraph(p["pieza"], style_celda),
+                Paragraph(f"$ {p['precio']:,.2f}", style_celda_num),
+                Paragraph(f"$ {p['precio']:,.2f}", style_celda_num)
+            ])
+
+        rep_data.append([
+            Paragraph("", style_celda),
+            Paragraph("<b>SUBTOTAL REPUESTOS</b>", style_celda_bold),
+            Paragraph("", style_celda),
+            Paragraph(f"<b>$ {total_repuestos:,.2f}</b>", style_celda_num_b)
+        ])
+        rep_data.append([
+            Paragraph("", style_celda),
+            Paragraph("<b>TOTAL PRESUPUESTADO</b>", style_sec_title),
+            Paragraph("", style_celda),
+            Paragraph(f"<b>$ {total_general:,.2f}</b>", ParagraphStyle('TotF', parent=style_celda_num_b, fontSize=9.5, textColor=colors.HexColor("#9C0000")))
+        ])
+
+        t_rep = Table(rep_data, colWidths=[35, 270, 120, 120])
+        t_rep.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#EAEFF5")),
+            ('LINEBELOW', (0,0), (-1,0), 1, colors.HexColor("#1A2B4C")),
+            ('LINEBELOW', (0,1), (-1,-3), 0.5, colors.HexColor("#E2E8F0")),
+            ('LINEABOVE', (0,-2), (-1,-2), 1, colors.HexColor("#1A2B4C")),
+            ('LINEABOVE', (0,-1), (-1,-1), 1.5, colors.HexColor("#9C0000")),
+            ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#FDF2F2")),
+            ('TOPPADDING', (0,0), (-1,-1), 2),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+        ]))
+        elementos.append(t_rep)
+        elementos.append(Spacer(1, 8))
+
+        style_pie = ParagraphStyle('Pie', fontName='Helvetica-Bold', fontSize=7.5, alignment=1, textColor=colors.HexColor("#555555"))
+        elementos.append(Paragraph("Presupuesto válido por 30 días", style_pie))
+
+        doc.build(elementos)
+        buffer.seek(0)
+        return buffer.getvalue()
+
+    # -------------------------------------------------------------
+    # GENERADOR DE EXCEL OFICIAL (.XLSX)
+    # -------------------------------------------------------------
+    def generar_excel():
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Presupuesto Oficial"
+        ws.views.sheetView[0].showGridLines = True
+
+        azul = "1F497D"
+        gris = "595959"
+        fondo_total = "EBF1F5"
+
+        borde = Border(
+            left=Side(style='thin', color='D9D9D9'),
+            right=Side(style='thin', color='D9D9D9'),
+            top=Side(style='thin', color='D9D9D9'),
+            bottom=Side(style='thin', color='D9D9D9')
+        )
+        borde_doble_abajo = Border(
+            top=Side(style='thin', color='1F497D'),
+            bottom=Side(style='double', color='1F497D')
+        )
+
+        ws["A1"] = f"{nombre_taller.upper()} — PRESUPUESTO OFICIAL N° {nro_presupuesto}"
+        ws["A1"].font = Font(size=13, bold=True, color=azul)
+        ws["A2"] = f"Vehículo: {datos.get('vehiculo_detectado')} | Dominio: {datos.get('patente_detectada')} | Titular: {nombre_titular}"
+        ws["A2"].font = Font(size=9.5, italic=True)
+
+        fila = 4
+        ws.cell(row=fila, column=1, value="I. DETALLE DE REPUESTOS RECLAMADOS").font = Font(bold=True, color=azul)
+        fila += 1
+
+        for c_idx, h in enumerate(["Ítem", "Rubro / Sistema", "Repuesto Reclamado", "Importe Unitario (ARS)", "Importe Total (ARS)", "Enlace Testigo"], 1):
+            c = ws.cell(row=fila, column=c_idx, value=h)
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill(start_color=azul, end_color=azul, fill_type="solid")
+            c.alignment = Alignment(horizontal="center", vertical="center")
+
+        fila += 1
+        for idx, p in enumerate(piezas_finales, 1):
+            ws.cell(row=fila, column=1, value=idx).alignment = Alignment(horizontal="center")
+            ws.cell(row=fila, column=2, value=p["categoria"])
+            ws.cell(row=fila, column=3, value=p["pieza"])
+            
+            c_u = ws.cell(row=fila, column=4, value=float(p["precio"]))
+            c_u.number_format = "$#,##0.00"
+            c_t = ws.cell(row=fila, column=5, value=float(p["precio"]))
+            c_t.number_format = "$#,##0.00"
+
+            ws.cell(row=fila, column=6, value=p["link"])
+            for col in range(1, 7):
+                ws.cell(row=fila, column=col).border = borde
+            fila += 1
+
+        ws.cell(row=fila, column=4, value="SUBTOTAL REPUESTOS:").font = Font(bold=True, color=azul)
+        ws.cell(row=fila, column=4).alignment = Alignment(horizontal="right")
+        c_tot_rep = ws.cell(row=fila, column=5, value=float(total_repuestos))
+        c_tot_rep.font = Font(bold=True, color=azul)
+        c_tot_rep.number_format = "$#,##0.00"
+
+        fila += 2
+        ws.cell(row=fila, column=1, value="II. MANO DE OBRA Y BAREMOS DE TALLER").font = Font(bold=True, color=azul)
+        fila += 1
+
+        for c_idx, h in enumerate(["Ítem", "Concepto de Tarea", "Detalle de Baremo", "Subtotal (ARS)"], 1):
+            c = ws.cell(row=fila, column=c_idx, value=h)
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill(start_color=gris, end_color=gris, fill_type="solid")
+            c.alignment = Alignment(horizontal="center", vertical="center")
+
+        fila += 1
+        tareas = [
+            ("M.O. Chapa pesada y banco", f"{dias_chapa} días @ ${tarifa_dia_chapa:,.2f}", sub_chapa),
+            ("M.O. Pintura en cabina", f"{panos} paños @ ${tarifa_pano:,.2f}", sub_pintura),
+            ("M.O. Arme, desarme y mecánica", "Desarme frontal y radiadores", sub_mec),
+            ("Materiales de pintura y selladores", "Insumos oficiales de sellado", sub_mat)
+        ]
+        for i, t in enumerate(tareas, 1):
+            ws.cell(row=fila, column=1, value=i).alignment = Alignment(horizontal="center")
+            ws.cell(row=fila, column=2, value=t[0])
+            ws.cell(row=fila, column=3, value=t[1])
+            c_mo = ws.cell(row=fila, column=4, value=float(t[2]))
+            c_mo.number_format = "$#,##0.00"
+            for col in range(1, 5):
+                ws.cell(row=fila, column=col).border = borde
+            fila += 1
+
+        ws.cell(row=fila, column=3, value="SUBTOTAL MANO DE OBRA:").font = Font(bold=True, color=gris)
+        ws.cell(row=fila, column=3).alignment = Alignment(horizontal="right")
+        c_tot_mo = ws.cell(row=fila, column=4, value=float(total_mo))
+        c_tot_mo.font = Font(bold=True, color=gris)
+        c_tot_mo.number_format = "$#,##0.00"
+
+        fila += 2
+        ws.cell(row=fila, column=3, value="TOTAL GENERAL PRESUPUESTADO:").font = Font(size=11, bold=True, color=azul)
+        ws.cell(row=fila, column=3).alignment = Alignment(horizontal="right")
+        tot = ws.cell(row=fila, column=4, value=float(total_general))
+        tot.font = Font(size=12, bold=True, color="B00000")
+        tot.number_format = "$#,##0.00"
+        tot.fill = PatternFill(start_color=fondo_total, end_color=fondo_total, fill_type="solid")
+        tot.border = borde_doble_abajo
+
+        ws.column_dimensions["A"].width = 6
+        ws.column_dimensions["B"].width = 25
+        ws.column_dimensions["C"].width = 38
+        ws.column_dimensions["D"].width = 24
+        ws.column_dimensions["E"].width = 24
+        ws.column_dimensions["F"].width = 40
+
+        buff = io.BytesIO()
+        wb.save(buff)
+        return buff.getvalue()
+
+    # BOTONES DE DESCARGA DUAL LADO A LADO
+    col_pdf, col_xlsx = st.columns(2)
+    with col_pdf:
+        st.download_button(
+            label="📄 Descargar Presupuesto en PDF (Cliente / Aseguradora)",
+            data=generar_pdf(),
+            file_name=f"Presupuesto_{datos.get('patente_detectada','AUTO').replace(' ','_')}_{nro_presupuesto}.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+    with col_xlsx:
+        st.download_button(
+            label="📊 Descargar Planilla de Control en Excel (.xlsx)",
+            data=generar_excel(),
+            file_name=f"Presupuesto_{datos.get('patente_detectada','AUTO').replace(' ','_')}_{nro_presupuesto}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )

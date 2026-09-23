@@ -1,4 +1,4 @@
-# Entorno virtual (no se sube)
+# Entorno virtual 
 venv/
 .venv/
 
@@ -11,3 +11,4 @@ __pycache__/
 
 # Archivos de prueba generados
 *.xlsx
+*.pdf
