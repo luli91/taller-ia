@@ -9,11 +9,11 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-# ReportLab para emisión del PDF formal
+# ReportLab para la generación del PDF profesional
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Image as RLImage
 
 load_dotenv()
 
@@ -32,10 +32,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="titulo-pericial">Taller IA — Peritaje Integral de Siniestros</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-pericial">Liquidación pericial a valores oficiales de reposición | Autos y Motos | Emisión en PDF y Excel</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-pericial">Liquidación pericial con baremos de cabina, relato pericial y entrega formal en PDF y Excel</div>', unsafe_allow_html=True)
 
 # -------------------------------------------------------------
-# LLAMADA ROBUSTA CON REINTENTOS (ANTI-ERROR 503 / 429)
+# LLAMADA ROBUSTA CON REINTENTOS AUTOMÁTICOS
 # -------------------------------------------------------------
 def llamar_gemini_con_reintentos(client, model, contents, config, max_reintentos=4):
     for intento in range(max_reintentos):
@@ -53,7 +53,7 @@ def llamar_gemini_con_reintentos(client, model, contents, config, max_reintentos
             raise e
 
 # -------------------------------------------------------------
-# 1. BARRA LATERAL: IDENTIDAD DEL TALLER, CLIENTE Y BAREMOS
+# 1. BARRA LATERAL: TALLER, CLIENTE Y BAREMOS
 # -------------------------------------------------------------
 with st.sidebar:
     st.subheader("1. Identidad del Taller")
@@ -67,21 +67,20 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("2. Datos del Presupuesto y Cliente")
-    nro_presupuesto = st.text_input("N° Presupuesto:", value="0002594")
-    nombre_titular = st.text_input("Titular / Asegurado:", value="Pirri Daniel Rodrigo")
-    dni_titular = st.text_input("DNI / CUIT:", value="38.319.206")
-    domicilio_titular = st.text_input("Domicilio:", value="Ortiz de Rozas 875, Moron")
-    tel_titular = st.text_input("Teléfono Titular:", value="11-6917-6032")
+    nro_presupuesto = st.text_input("N° Presupuesto:", value="0002596")
+    nombre_titular = st.text_input("Titular / Asegurado:", value="Sicoli Agostina Maria")
+    dni_titular = st.text_input("DNI / CUIT:", value="36.872.370")
+    domicilio_titular = st.text_input("Domicilio:", value="Neuquen 1970, CABA")
+    tel_titular = st.text_input("Teléfono Titular:", value="")
 
     st.markdown("---")
     st.subheader("3. Baremos y Tarifas Base")
     tipo_vehiculo = st.radio("Tipo de Vehículo:", ["Automotor / Utilitario", "Motovehículo / Moto"], index=0)
-    tarifa_pano = st.number_input("Valor por paño de pintura (ARS):", min_value=0, value=140000, step=5000)
+    tarifa_pano = st.number_input("Valor por paño de pintura (ARS):", min_value=0, value=200000, step=5000)
     tarifa_dia_chapa = st.number_input("Valor día chapa pesada / banco (ARS):", min_value=0, value=110000, step=5000)
-    tarifa_mecanica = st.number_input("M.O. Tren Delantero / Desarme (ARS):", min_value=0, value=300000, step=10000)
-    tarifa_motor_alineacion = st.number_input("M.O. Motor / Cárter / Alineación (ARS):", min_value=0, value=240000, step=10000)
+    tarifa_desarme = st.number_input("M.O. Armado y Desarmado / Tren Delantero (ARS):", min_value=0, value=180000, step=10000)
+    tarifa_motor_alineacion = st.number_input("M.O. Mecánica / Cárter / Alineación (ARS):", min_value=0, value=240000, step=10000)
     tarifa_service_fluidos = st.number_input("Kit Service Aceite y Filtros (ARS):", min_value=0, value=316000, step=5000)
-    costo_materiales = st.number_input("Materiales e insumos selladores (ARS):", min_value=0, value=150000, step=10000)
 
 if "peritaje_listo" not in st.session_state:
     st.session_state.peritaje_listo = False
@@ -91,97 +90,119 @@ if "repuestos_cotizados" not in st.session_state:
     st.session_state.repuestos_cotizados = []
 
 # -------------------------------------------------------------
-# 2. CARGA DE ARCHIVOS (FOTOS O EXPEDIENTES EN PDF)
+# 2. CARGA DE DOCUMENTOS Y RELATO DEL HECHO
 # -------------------------------------------------------------
 archivos_subidos = st.file_uploader(
-    "Subí fotos del siniestro (JPG/PNG) o carpetas periciales en PDF enviadas por estudios jurídicos:",
+    "Subí fotos del siniestro (JPG/PNG) o carpetas periciales en PDF (podés seleccionar múltiples archivos):",
     type=["jpg", "jpeg", "png", "pdf"],
     accept_multiple_files=True
 )
 
 if archivos_subidos:
-    st.success(f"{len(archivos_subidos)} archivo(s) listo(s) para procesar.")
+    st.success(f"{len(archivos_subidos)} archivo(s) seleccionado(s).")
+    imgs_para_mostrar = [a for a in archivos_subidos if not a.name.lower().endswith(".pdf")]
+    if imgs_para_mostrar:
+        cols = st.columns(min(len(imgs_para_mostrar), 5))
+        for i, arch in enumerate(imgs_para_mostrar):
+            with cols[i % 5]:
+                st.image(arch.getvalue(), caption=f"Foto {i+1}", use_container_width=True)
+
+relato_siniestro = st.text_area(
+    "Relato del hecho / Observaciones del perito (daños ocultos, mecánica o aclaraciones de taller):",
+    placeholder="Ej: Encerrona en avenida: raspón corrido de punta a punta afectando paragolpes delantero, espejo izquierdo, guardabarros trasero y paragolpes trasero con ojo de gato. El guardabarros trasero se repara en chapa y pintura, no se cambia..."
+)
 
 boton_iniciar = st.button(
-    "Iniciar Peritaje y Liquidación Oficial",
+    "Iniciar Peritaje Integral y Liquidación Oficial",
     type="primary",
     use_container_width=True,
     disabled=(not archivos_subidos)
 )
 
 # -------------------------------------------------------------
-# 3. MOTOR PERICIAL INTELIGENTE MULTIZONA
+# 3. MOTOR PERICIAL INTELIGENTE CON REGLAS DE BAREMO
 # -------------------------------------------------------------
 if boton_iniciar and archivos_subidos:
     client = genai.Client()
     contenidos_gemini = []
 
     for a in archivos_subidos:
-        bytes_data = a.read()
+        bytes_data = a.getvalue()
+        if not bytes_data:
+            continue
+
         if a.name.lower().endswith(".pdf"):
             contenidos_gemini.append(types.Part.from_bytes(data=bytes_data, mime_type="application/pdf"))
         else:
-            im = Image.open(io.BytesIO(bytes_data)).convert("RGB")
-            im.thumbnail((1024, 1024))
-            buf = io.BytesIO()
-            im.save(buf, format="JPEG")
-            contenidos_gemini.append(types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"))
+            try:
+                im = Image.open(io.BytesIO(bytes_data)).convert("RGB")
+                im.thumbnail((1024, 1024))
+                buf = io.BytesIO()
+                im.save(buf, format="JPEG")
+                contenidos_gemini.append(types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"))
+            except Exception as e_img:
+                st.warning(f"No se pudo decodificar la imagen {a.name}: {e_img}")
 
-    with st.spinner("Analizando cinemática pericial, deduciendo piezas y cotizando a valores de reposición..."):
+    with st.spinner("Analizando imágenes, cotejando relato del hecho y computando baremos periciales..."):
         prompt = f"""
         Sos un perito liquidador senior de siniestros viales en Argentina y jefe técnico de taller.
-        Analizá minuciosamente el material fotográfico y/o documental en PDF subido.
-        Vehículo configurado: {tipo_vehiculo}.
+        Analizá el material gráfico subido en conjunto con este relato técnico del taller:
 
-        TAREAS OBLIGATORIAS:
+        RELATO DEL HECHO / OBSERVACIONES:
+        "{relato_siniestro if relato_siniestro.strip() else 'Sin relato provisto. Deducir puramente de las imágenes.'}"
+
+        TIPO DE VEHÍCULO: {tipo_vehiculo}.
+
+        REGLAS PERICIALES Y BAREMOS HOMOLOGADOS (CESVI / CONCESIONARIOS OEM):
 
         1. IDENTIFICACIÓN VEHICULAR:
-           - Marca, Modelo exacto, Generación/Año y Patente (visible o deducida de emblemas/documentos).
+           - Marca, Modelo exacto, Generación/Año y Patente (visible o deducida).
 
-        2. CLASIFICACIÓN DE LA CINEMÁTICA Y ZONA DE DAÑO:
-           - 'POZO_VIAL': Bache, pozo, cordoneo o desnivel vial con rotura de tren rodante y bajos de motor.
-           - 'CHOQUE_FRONTAL': Impacto en trompa, capot, frente porta radiadores, mecánica delantera.
-           - 'CHOQUE_LATERAL': Impacto sobre guardabarros soldados, puertas, ventiletes y banco de estiramiento.
-           - 'CHOQUE_POSTERIOR': Impacto de cola, tapa baúl, panel de cola y piso.
-           - 'MOTOVEHICULO': Siniestro de moto (horquilla, manillar, carenados plásticos, escape).
+        2. REGLA ESTRUCTURAL DEL GUARDABARROS TRASERO (MONOCASCO):
+           - El guardabarros trasero / lateral es pieza soldada al monocasco. Salvo destrucción total irreparable, NO SE PONE REPUESTO DE CHAPA: se liquida como M.O. CHAPA PESADA (días de estiramiento en banco) + PAÑOS DE PINTURA.
 
-        3. MATRIZ DE LIQUIDACIÓN TÉCNICA (PRECIOS DE REPOSICIÓN ORIGINAL OEM EN ARS):
+        3. BAREMO TÉCNICO DE PINTURA (MÁXIMO PERICIAL):
+           - Un automóvil completo entero tiene entre 14 y 16 paños en total.
+           - Si el siniestro es un ROCE LATERAL CORRIDO (roce de trompa a cola que afecta paragolpes delantero, espejo, puertas, lateral soldado, zócalo y paragolpes trasero):
+             * 'panos_pintura': Asignar exactamente 11.0 paños (cubre las superficies rozadas más los difuminados técnicos indispensables de cabina). NUNCA superar 11.0 paños por un solo costado.
+           - Si es choque frontal común: entre 5.0 y 7.0 paños.
+           - Si es impacto trasero puro: entre 3.0 y 4.5 paños.
+           - Si es pozo vial: 0.0 paños.
 
-           A) SI ES 'POZO_VIAL':
-              - Chapa y pintura en $0 (panos_pintura=0, dias_chapa_banco=0).
-              - Repuestos Obligatorios: Llanta de aleación original rota/abollada, Neumático nuevo de reposición, Parrilla de suspensión delantera, Rótula de suspensión partida, Kit x2 amortiguadores delanteros (par de eje), Kit extremos de dirección y axiales.
-              - Bajos de motor: Cárter de motor de aluminio original si hay golpe de panza o fuga de aceite.
-              - Mano de Obra: Activar 'requiere_tren_delantero': true, 'requiere_motor_alineacion': true, 'incluye_service_aceite': true.
-
-           B) SI ES 'CHOQUE_FRONTAL':
-              - Capot, paragolpes, parrilla, ópticas, panel porta radiadores, alma, puntera, patas de motor/caja, semieje, radiadores. Chapa (3-5 días), Pintura (5-7 paños), Tren delantero: true.
-
-           C) SI ES 'CHOQUE_LATERAL':
-              - Lateral soldado (10-14 días chapa), desmonte de ventilete/cristal, llanta de aleación si hubo contacto, eje trasero.
-
-           D) SI ES 'MOTOVEHICULO':
-              - Horquilla, barrales, cristo, manillar, palancas, espejos, pedalines, escape, carenados plásticos. Chapa=0, Pintura plásticos (2-4 paños).
+        4. MATRIZ DE REPUESTOS TÉCNICOS (PRECIOS DE REPOSICIÓN ORIGINAL OEM EN ARS):
+           - Si hay roce corrido delantero-lateral-trasero:
+             * Paragolpes trasero original con alojamiento de radar/sensores si corresponde.
+             * Faro trasero exterior del lado afectado (inspeccionar anclajes y fisuras).
+             * Paragolpes delantero original.
+             * Moldura cromada / rejilla delantera.
+             * Espejo retrovisor exterior completo.
+             * Ojo de gato / reflectante de paragolpes trasero.
+           - Si es pozo vial:
+             * Llanta original, neumático nuevo, parrilla de suspensión, kit amortiguadores par, rótula, extremos, cárter de aluminio y activar 'incluye_service_aceite': true. Chapa y pintura en $0.
+           - Si es choque frontal:
+             * Capot, paragolpes, ópticas, panel porta radiador, alma, radiador, patas de motor/caja, semiejes.
+           - Si es motovehículo:
+             * Horquilla, barrales, cristo, manillar, manetas, pedalines, escape, plásticos/carenados. Chapa=0, Pintura plásticos (2-4 paños).
 
         Respondé ÚNICAMENTE en JSON con esta estructura exacta:
         {{
-          "vehiculo_detectado": "Volkswagen Gol Trend 1.6",
-          "patente_detectada": "IMA 532",
-          "fuente_identificacion": "Peritaje visual de carrocería y componentes mecánicos",
-          "tipologia_siniestro": "POZO_VIAL",
+          "vehiculo_detectado": "Renault Sandero PH2 Zen 1.6",
+          "patente_detectada": "AE 941 XW",
+          "fuente_identificacion": "Peritaje visual de carrocería y chapa patente",
+          "tipologia_siniestro": "ROCE_LATERAL_CORRIDO",
           "diagnostico_cinematica": "Dictamen pericial técnico detallado...",
-          "panos_pintura": 0.0,
-          "dias_chapa_banco": 0.0,
-          "requiere_tren_delantero": true,
-          "requiere_motor_alineacion": true,
-          "incluye_service_aceite": true,
+          "panos_pintura": 11.0,
+          "dias_chapa_banco": 5.0,
+          "requiere_arme_desarme": true,
+          "requiere_mecanica_motor": false,
+          "incluye_service_aceite": false,
           "repuestos": [
-            {{"categoria": "Tren Rodante", "pieza": "Llanta de Aleación Rodado 15 Original", "precio_oem": 756120.0}},
-            {{"categoria": "Motor y Bajos", "pieza": "Cárter de Motor Aluminio Superior 1.6 8V Original", "precio_oem": 423760.0}},
-            {{"categoria": "Suspensión y Dirección", "pieza": "Parrilla de Suspensión Delantera Izquierda Original", "precio_oem": 390080.0}},
-            {{"categoria": "Tren Rodante", "pieza": "Neumático 195/55 R15 Nuevo", "precio_oem": 371920.0}},
-            {{"categoria": "Suspensión y Dirección", "pieza": "Kit x2 Amortiguadores Delanteros (Par de Eje)", "precio_oem": 330930.0}},
-            {{"categoria": "Suspensión y Dirección", "pieza": "Rótula de Suspensión Delantera Izquierda", "precio_oem": 91780.0}},
-            {{"categoria": "Suspensión y Dirección", "pieza": "Kit Extremos de Dirección, Axiales y Fuelles Delanteros", "precio_oem": 140000.0}}
+            {{"categoria": "Carrocería Exterior", "pieza": "Paragolpes Trasero (c/ alojamiento radar/sensores) Original", "precio_oem": 1147340.0}},
+            {{"categoria": "Iluminación", "pieza": "Faro Trasero Exterior Izquierdo Original", "precio_oem": 659000.0}},
+            {{"categoria": "Carrocería Exterior", "pieza": "Paragolpes Delantero Original", "precio_oem": 555980.0}},
+            {{"categoria": "Carrocería Exterior", "pieza": "Moldura Cromada Parrilla Delantera Original", "precio_oem": 405700.0}},
+            {{"categoria": "Carrocería Exterior", "pieza": "Espejo Retrovisor Izquierdo Completo", "precio_oem": 230000.0}},
+            {{"categoria": "Iluminación / Accesorios", "pieza": "Ojo de Gato Paragolpes Trasero Izquierdo", "precio_oem": 114030.0}}
           ]
         }}
         """
@@ -211,7 +232,7 @@ if boton_iniciar and archivos_subidos:
         st.rerun()
 
 # -------------------------------------------------------------
-# 4. VISUALIZACIÓN, EDICIÓN Y EXPORTACIÓN DUAL
+# 4. RESULTADOS, EDICIÓN Y EXPORTACIÓN DUAL
 # -------------------------------------------------------------
 if st.session_state.peritaje_listo and st.session_state.datos_peritaje:
     datos = st.session_state.datos_peritaje
@@ -239,32 +260,34 @@ if st.session_state.peritaje_listo and st.session_state.datos_peritaje:
         st.write(f"Pintura: **${sub_pintura:,.2f}**")
 
     with c2:
-        dias_chapa = st.number_input("Días Banco / Chapa:", value=float(datos.get("dias_chapa_banco", 0.0)), step=0.5)
+        dias_chapa = st.number_input("Días Chapa Pesada / Banco:", value=float(datos.get("dias_chapa_banco", 0.0)), step=0.5)
         sub_chapa = dias_chapa * tarifa_dia_chapa
         st.write(f"Chapa: **${sub_chapa:,.2f}**")
 
     with c3:
-        req_tren = datos.get("requiere_tren_delantero", True)
-        aplica_tren = st.checkbox("M.O. Tren Delantero", value=req_tren)
-        sub_tren = tarifa_mecanica if aplica_tren else 0.0
+        req_desarme = datos.get("requiere_arme_desarme", True)
+        aplica_desarme = st.checkbox("M.O. Armado y Desarmado", value=req_desarme)
+        sub_desarme = tarifa_desarme if aplica_desarme else 0.0
 
-        req_motor = datos.get("requiere_motor_alineacion", True)
-        aplica_motor = st.checkbox("M.O. Motor y Alineación", value=req_motor)
+        req_motor = datos.get("requiere_mecanica_motor", False)
+        aplica_motor = st.checkbox("M.O. Mecánica / Tren Delantero", value=req_motor)
         sub_motor = tarifa_motor_alineacion if aplica_motor else 0.0
 
-        st.write(f"Tren Del.: **${sub_tren:,.2f}**")
-        st.write(f"Motor/Alin.: **${sub_motor:,.2f}**")
+        st.write(f"Arme/Desarme: **${sub_desarme:,.2f}**")
+        if aplica_motor:
+            st.write(f"Mecánica: **${sub_motor:,.2f}**")
 
     with c4:
         inc_service = datos.get("incluye_service_aceite", False)
         aplica_service = st.checkbox("Kit Service Aceite y Filtros", value=inc_service)
         sub_serv = tarifa_service_fluidos if aplica_service else 0.0
-        st.write(f"Fluidos/Service: **${sub_serv:,.2f}**")
+        if aplica_service:
+            st.write(f"Service: **${sub_serv:,.2f}**")
 
-    total_mo = sub_pintura + sub_chapa + sub_tren + sub_motor + sub_serv
+    total_mo = sub_pintura + sub_chapa + sub_desarme + sub_motor + sub_serv
 
-    # REPUESTOS LIMPIOS (SIN LINKS ROTOS)
-    st.subheader(f"2. Detalle de Repuestos Reclamados ({len(st.session_state.repuestos_cotizados)} detectados)")
+    # REPUESTOS LIMPIOS Y EDICIÓN RÁPIDA
+    st.subheader(f"2. Detalle de Repuestos Reclamados ({len(st.session_state.repuestos_cotizados)} ítems)")
     piezas_finales = []
     for idx, r in enumerate(st.session_state.repuestos_cotizados):
         col_c, col_p = st.columns([7, 3])
@@ -275,22 +298,41 @@ if st.session_state.peritaje_listo and st.session_state.datos_peritaje:
 
         if activa:
             piezas_finales.append({
-                "categoria": r["categoria"],
+                "categoria": r.get("categoria", "Repuestos"),
                 "pieza": r["pieza"],
                 "precio": pr
             })
+
+    # FORMULARIO MANUAL PARA SUMAR PIEZAS INTERNAS
+    with st.expander("➕ Agregar repuesto manualmente (daño oculto o traba partida)"):
+        col_nom, col_pre, col_btn = st.columns([5, 3, 2])
+        with col_nom:
+            nuevo_nombre = st.text_input("Descripción de la pieza:", key="input_nuevo_nombre", placeholder="Ej: Faro Trasero Exterior Izquierdo Original")
+        with col_pre:
+            nuevo_precio = st.number_input("Precio oficial ARS:", min_value=0.0, step=5000.0, value=650000.0, key="input_nuevo_precio")
+        with col_btn:
+            st.write("")
+            st.write("")
+            if st.button("Agregar a la lista", use_container_width=True):
+                if nuevo_nombre.strip():
+                    st.session_state.repuestos_cotizados.append({
+                        "categoria": "Repuestos Adicionales",
+                        "pieza": nuevo_nombre.strip(),
+                        "precio": float(nuevo_precio)
+                    })
+                    st.rerun()
 
     total_repuestos = sum(p["precio"] for p in piezas_finales)
     total_general = total_repuestos + total_mo
 
     st.divider()
     m1, m2, m3 = st.columns(3)
-    m1.metric("Subtotal Mano de Obra y Servicios", f"${total_mo:,.2f}")
+    m1.metric("Subtotal Mano de Obra", f"${total_mo:,.2f}")
     m2.metric("Subtotal Repuestos", f"${total_repuestos:,.2f}")
     m3.metric("TOTAL PRESUPUESTADO", f"${total_general:,.2f}")
 
     # -------------------------------------------------------------
-    # GENERADOR DE PDF OFICIAL (FORMATO FORMAL)
+    # GENERADOR DE PDF COMERCIAL LIMPIO
     # -------------------------------------------------------------
     def generar_pdf():
         buffer = io.BytesIO()
@@ -346,7 +388,7 @@ if st.session_state.peritaje_listo and st.session_state.datos_peritaje:
         info_cliente = [
             [Paragraph(f"<b>Vehículo:</b> {vehiculo_str}", style_celda_bold), Paragraph(f"<b>Titular:</b> {nombre_titular}", style_celda)],
             [Paragraph(f"<b>DNI / CUIT:</b> {dni_titular}", style_celda), Paragraph(f"<b>Teléfono:</b> {tel_titular if tel_titular else 'S/D'}", style_celda)],
-            [Paragraph(f"<b>Domicilio:</b> {domicilio_titular}", style_celda), Paragraph("<b>Localidad:</b> Morón, Buenos Aires", style_celda)]
+            [Paragraph(f"<b>Domicilio:</b> {domicilio_titular}", style_celda), Paragraph("<b>Localidad:</b> CABA, Buenos Aires", style_celda)]
         ]
         elementos.append(Table(info_cliente, colWidths=[270, 275], style=[
             ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#B0C0D0")),
@@ -356,23 +398,23 @@ if st.session_state.peritaje_listo and st.session_state.datos_peritaje:
         ]))
         elementos.append(Spacer(1, 8))
 
-        elementos.append(Paragraph("<b>Detalles de tareas y servicios</b>", style_sec_title))
+        elementos.append(Paragraph("<b>Detalles de tareas (Mano de Obra)</b>", style_sec_title))
         elementos.append(Spacer(1, 3))
         tareas_data = [
             [Paragraph("<b>Descripción de la Tarea</b>", style_celda_bold), Paragraph("<b>Detalle</b>", style_celda_bold), Paragraph("<b>Subtotal</b>", style_celda_num_b)]
         ]
         if sub_chapa > 0:
-            tareas_data.append([Paragraph("M.O. CHAPA PESADA Y BANCO", style_celda), Paragraph(f"{dias_chapa} días", style_celda), Paragraph(f"$ {sub_chapa:,.2f}", style_celda_num)])
+            tareas_data.append([Paragraph("M.O. CHAPA PESADA", style_celda), Paragraph(f"{dias_chapa} días de chapa / estiramiento", style_celda), Paragraph(f"$ {sub_chapa:,.2f}", style_celda_num)])
         if sub_pintura > 0:
-            tareas_data.append([Paragraph("M.O. PINTURA EN CABINA", style_celda), Paragraph(f"{panos} paños", style_celda), Paragraph(f"$ {sub_pintura:,.2f}", style_celda_num)])
-        if sub_tren > 0:
-            tareas_data.append([Paragraph("M.O. REPARACIÓN DE TREN DELANTERO", style_celda), Paragraph("Desarme, reemplazo y montaje", style_celda), Paragraph(f"$ {sub_tren:,.2f}", style_celda_num)])
+            tareas_data.append([Paragraph("M.O. PINTURA", style_celda), Paragraph(f"{panos} paños de pintura en cabina", style_celda), Paragraph(f"$ {sub_pintura:,.2f}", style_celda_num)])
+        if sub_desarme > 0:
+            tareas_data.append([Paragraph("ARMADO Y DESARMADO", style_celda), Paragraph("Desarme y ensamble de carrocería", style_celda), Paragraph(f"$ {sub_desarme:,.2f}", style_celda_num)])
         if sub_motor > 0:
-            tareas_data.append([Paragraph("M.O. MECÁNICA DE MOTOR, ARMADO Y ALINEACIÓN", style_celda), Paragraph("Cárter y alineación computarizada", style_celda), Paragraph(f"$ {sub_motor:,.2f}", style_celda_num)])
+            tareas_data.append([Paragraph("M.O. MECÁNICA Y TREN DELANTERO", style_celda), Paragraph("Mecánica y alineación computarizada", style_celda), Paragraph(f"$ {sub_motor:,.2f}", style_celda_num)])
         if sub_serv > 0:
-            tareas_data.append([Paragraph("KIT SERVICE DE ACEITE SINTETICO 5W40 (4L) + FILTROS", style_celda), Paragraph("Fluidos oficiales y filtrado completo", style_celda), Paragraph(f"$ {sub_serv:,.2f}", style_celda_num)])
+            tareas_data.append([Paragraph("KIT SERVICE DE ACEITE Y FILTROS", style_celda), Paragraph("Fluidos oficiales y filtrado completo", style_celda), Paragraph(f"$ {sub_serv:,.2f}", style_celda_num)])
 
-        tareas_data.append([Paragraph("<b>TOTAL MANO DE OBRA Y SERVICIOS</b>", style_celda_bold), Paragraph("", style_celda), Paragraph(f"<b>$ {total_mo:,.2f}</b>", style_celda_num_b)])
+        tareas_data.append([Paragraph("<b>TOTAL MANO DE OBRA</b>", style_celda_bold), Paragraph("", style_celda), Paragraph(f"<b>$ {total_mo:,.2f}</b>", style_celda_num_b)])
 
         elementos.append(Table(tareas_data, colWidths=[240, 185, 120], style=[
             ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#EAEFF5")),
@@ -432,7 +474,7 @@ if st.session_state.peritaje_listo and st.session_state.datos_peritaje:
         return buffer.getvalue()
 
     # -------------------------------------------------------------
-    # GENERADOR DE EXCEL FORMAL (SIN LINKS ROTOS)
+    # GENERADOR DE PLANILLA EXCEL (.XLSX)
     # -------------------------------------------------------------
     def generar_excel():
         wb = openpyxl.Workbook()
@@ -493,15 +535,15 @@ if st.session_state.peritaje_listo and st.session_state.datos_peritaje:
         fila += 1
         tareas_excel = []
         if sub_chapa > 0:
-            tareas_excel.append(("M.O. Chapa pesada y banco", f"{dias_chapa} días", sub_chapa))
+            tareas_excel.append(("M.O. Chapa pesada", f"{dias_chapa} días", sub_chapa))
         if sub_pintura > 0:
-            tareas_excel.append(("M.O. Pintura en cabina", f"{panos} paños", sub_pintura))
-        if sub_tren > 0:
-            tareas_excel.append(("M.O. Reparación de Tren Delantero", "Desarme, reemplazo y montaje", sub_tren))
+            tareas_excel.append(("M.O. Pintura", f"{panos} paños", sub_pintura))
+        if sub_desarme > 0:
+            tareas_excel.append(("Armado y desarmado", "Carrocería", sub_desarme))
         if sub_motor > 0:
-            tareas_excel.append(("M.O. Mecánica de Motor, Armado y Alineación", "Cárter y alineación", sub_motor))
+            tareas_excel.append(("M.O. Mecánica y tren delantero", "Alineación", sub_motor))
         if sub_serv > 0:
-            tareas_excel.append(("Kit Service Aceite Sintético 5W40 + Filtros", "Fluidos oficiales", sub_serv))
+            tareas_excel.append(("Kit Service Aceite Sintético + Filtros", "Fluidos", sub_serv))
 
         for i, t in enumerate(tareas_excel, 1):
             ws.cell(row=fila, column=1, value=i).alignment = Alignment(horizontal="center")
@@ -541,7 +583,7 @@ if st.session_state.peritaje_listo and st.session_state.datos_peritaje:
     col_pdf, col_xlsx = st.columns(2)
     with col_pdf:
         st.download_button(
-            label="📄 Descargar Presupuesto Oficial en PDF (Listo para Enviar)",
+            label="📄 Descargar Presupuesto Oficial en PDF",
             data=generar_pdf(),
             file_name=f"Presupuesto_{datos.get('patente_detectada','AUTO').replace(' ','_')}_{nro_presupuesto}.pdf",
             mime="application/pdf",
